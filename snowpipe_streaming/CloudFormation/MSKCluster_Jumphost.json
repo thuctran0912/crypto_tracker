@@ -1,0 +1,504 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description" : "Create a MSK cluster and a Jumphost in the same subnet, with or without Client AuthN",
+    "Parameters": {
+        "Subnet1" : {
+          "Description" : "Subnet ID to deploy MSK cluster to",
+          "Type" : "AWS::EC2::Subnet::Id",
+          "Default" : ""
+        },
+        "Subnet2" : {
+          "Description" : "Subnet ID to deploy MSK cluster to",
+          "Type" : "AWS::EC2::Subnet::Id",
+          "Default" : ""
+        },
+        "MSKKafkaVersion": {
+            "Type": "String",
+            "Default": "2.8.1",
+            "AllowedValues": [
+                "2.8.1",
+                "2.8.0"
+            ]
+        },
+        "MSKSecurityGroupId" : {
+            "Description" : "Subnet ID to deploy JumpHost instance to, must be the same as the MSKSecurityGroupID in the output section of MSK template",
+            "Type" : "AWS::EC2::SecurityGroup::Id",
+            "Default" : ""
+        },
+        "TLSMutualAuthentication": {
+            "Type": "String",
+            "Default": false,
+            "Description": "Whether TLS Mutual Auth should be enabled for the Amazon MSK cluster.",
+            "AllowedValues": [
+                false
+            ]
+        },
+        "pInstanceType" : {
+            "Description" : "JumpHost EC2 instance types",
+            "Type" : "String",
+            "Default" : "t3.medium",
+            "AllowedValues" : [
+                "t2.small",
+                "t2.medium",
+                "t3.small",
+                "t3.medium"
+            ]
+        },
+        "LatestAmiId" : {
+            "Type" : "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+            "Description" : "JumpHost EC2 AMI Id",
+            "Default" : "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2",
+            "AllowedValues": [
+                "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
+            ]
+        },
+        "FINNHUBApiKey": {
+        "Type": "String",
+        "Description": "API Key for accessing Finnhub services",
+        "NoEcho": true
+    }
+    },
+    "Conditions": {
+        "MTLS": {
+            "Fn::Equals": [
+                {
+                    "Ref": "TLSMutualAuthentication"
+                },
+                true
+            ]
+        },
+        "noMTLS": {
+            "Fn::Equals": [
+                {
+                    "Ref": "TLSMutualAuthentication"
+                },
+                false
+            ]
+        }
+    },
+    "Metadata" : {
+      "AWS::CloudFormation::Interface" : {
+        "ParameterGroups" : [
+          {
+            "Label" : {
+              "default" : "MSK Parameters"
+            },
+            "Parameters" : [
+              "MSKKafkaVersion",
+              "Subnet1",
+              "Subnet2",
+              "MSKSecurityGroupId",
+              "TLSMutualAuthentication"
+            ]
+          },
+          {
+            "Label" : {
+              "default" : "Jumphost Parameters"
+            },
+            "Parameters" : [
+              "pInstanceType",
+              "LatestAmiId",
+              "FINNHUBApiKey"
+            ]
+          }
+        ]
+      }
+    },
+    "Resources": {
+        "MSKConfiguration": {
+            "Type" : "AWS::MSK::Configuration",
+            "Properties" : {
+                "Description" : "Cluster configuration",
+                "KafkaVersionsList" : [
+                    {
+                        "Ref": "MSKKafkaVersion"
+                    }],
+                "Name": {"Fn::Sub" : "${AWS::StackName}-MyClusterConfig"},
+                "ServerProperties" : "auto.create.topics.enable=true\ndefault.replication.factor=3\nmin.insync.replicas=2\nnum.io.threads=8\nnum.network.threads=5\nnum.partitions=1\nnum.replica.fetchers=2\nreplica.lag.time.max.ms=30000\nsocket.receive.buffer.bytes=102400\nsocket.request.max.bytes=104857600\nsocket.send.buffer.bytes=102400\nunclean.leader.election.enable=true\nconnections.max.idle.ms=1800000\nzookeeper.session.timeout.ms=18000\n"
+            }
+        },
+        "MSKClusterMTLS": {
+            "Type": "AWS::MSK::Cluster",
+            "Condition": "MTLS",
+            "Properties": {
+                "BrokerNodeGroupInfo": {
+                    "ClientSubnets": [
+                        {
+                            "Ref": "Subnet1"
+                        },
+                        {
+                            "Ref": "Subnet2"
+                        }
+                    ],
+                    "InstanceType": "kafka.t3.small",
+                    "SecurityGroups": [
+                        {
+                            "Ref": "MSKSecurityGroupId"
+                        }
+                    ],
+                    "StorageInfo": {
+                        "EbsStorageInfo": {
+                            "ProvisionedThroughput": {
+                                "Enabled": false
+                            },
+                            "VolumeSize": 32
+                        }
+                    }
+                },
+                "ConfigurationInfo": {
+                    "Arn": {"Fn::GetAtt" : ["MSKConfiguration", "Arn"]},
+                    "Revision": "1"
+                },
+                "ClusterName": {
+                    "Fn::Join": [
+                        "-",
+                        [
+                            "MSKCluster",
+                            {
+                                "Ref": "AWS::StackName"
+                            }
+                        ]
+                    ]
+                },
+                "EncryptionInfo": {
+                    "EncryptionInTransit": {
+                        "ClientBroker": "TLS",
+                        "InCluster": true
+                    }
+                },
+                "ClientAuthentication": {
+                  "Sasl": {
+                      "Scram": {
+                        "Enabled": false
+                      },
+                      "Iam": {
+                        "Enabled": false
+                     }
+                  },
+                  "Tls": {
+                      "CertificateAuthorityArnList": [],
+                      "Enabled": false
+                  },
+                  "Unauthenticated": {
+                      "Enabled": true
+                  }
+                },
+                "EnhancedMonitoring": "DEFAULT",
+                "KafkaVersion": {
+                    "Ref": "MSKKafkaVersion"
+                },
+                "NumberOfBrokerNodes": 2
+            }
+        },
+        "MSKClusterNoMTLS": {
+            "Type": "AWS::MSK::Cluster",
+            "Condition": "noMTLS",
+            "Properties": {
+                "BrokerNodeGroupInfo": {
+                    "ClientSubnets": [
+                        {
+                            "Ref": "Subnet1"
+                        },
+                        {
+                            "Ref": "Subnet2"
+                        }
+                    ],
+                    "InstanceType": "kafka.t3.small",
+                    "SecurityGroups": [
+                        {
+                            "Ref": "MSKSecurityGroupId"
+                        }
+                    ],
+                    "StorageInfo": {
+                        "EBSStorageInfo": {
+                            "VolumeSize": 32
+                        }
+                    }
+                },
+                "ConfigurationInfo": {
+                    "Arn": {"Fn::GetAtt" : ["MSKConfiguration", "Arn"]},
+                    "Revision": "1"
+                },
+                "ClusterName": {
+                    "Fn::Join": [
+                        "-",
+                        [
+                            "MSKCluster",
+                            {
+                                "Ref": "AWS::StackName"
+                            }
+                        ]
+                    ]
+                },
+                "EncryptionInfo": {
+                    "EncryptionInTransit": {
+                        "ClientBroker": "TLS",
+                        "InCluster": true
+                    }
+                },
+                "ClientAuthentication": {
+                  "Sasl": {
+                      "Scram": {
+                        "Enabled": false
+                      },
+                      "Iam": {
+                        "Enabled": false
+                     }
+                  },
+                  "Tls": {
+                      "CertificateAuthorityArnList": [],
+                      "Enabled": false
+                  },
+                  "Unauthenticated": {
+                      "Enabled": true
+                  }
+                },
+                "EnhancedMonitoring": "DEFAULT",
+                "KafkaVersion": {
+                    "Ref": "MSKKafkaVersion"
+                },
+                "NumberOfBrokerNodes": 2
+            }
+        },
+        "rJumpHostInstanceRole" : {
+            "Type" : "AWS::IAM::Role",
+            "Properties" : {
+                "AssumeRolePolicyDocument" : {
+                    "Version" : "2012-10-17",
+                    "Statement" : [
+                        {
+                            "Effect" : "Allow",
+                            "Principal" : {
+                                "Service" : [
+                                    "ec2.amazonaws.com"
+                                ]
+                            },
+                            "Action" : [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "ManagedPolicyArns" : [
+                   "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"
+                ],
+                "Policies" : [
+                   {
+                     "PolicyName" : {
+                        "Fn::Sub" : "${AWS::StackName}-${AWS::AccountId}-jumphostpolicy"
+                     },
+                     "PolicyDocument" : {
+                        "Version" : "2012-10-17",
+                        "Statement" : [
+                          {
+                            "Effect" : "Allow",
+                            "Action" : "s3:*",
+                            "Resource" : "*"
+                          }
+                        ]
+                     }
+                   }
+                ]
+            }
+        },
+        "MSKConnectRole" : {
+            "Type" : "AWS::IAM::Role",
+            "Properties" : {
+                "AssumeRolePolicyDocument" : {
+                    "Version" : "2012-10-17",
+                    "Statement" : [
+                        {
+                            "Effect" : "Allow",
+                            "Principal" : {
+                                "Service" : [
+                                    "kafkaconnect.amazonaws.com"
+                                ]
+                            },
+                            "Action" : [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Policies" : [
+                   {
+                     "PolicyName" : {
+                        "Fn::Sub" : "${AWS::StackName}-${AWS::AccountId}-mskconnect-policy"
+                     },
+                     "PolicyDocument" : {
+                        "Version" : "2012-10-17",
+                        "Statement" : [
+                          {
+                            "Effect" : "Allow",
+                            "Action" : "s3:*",
+                            "Resource" : "*"
+                          },
+                          {
+                            "Effect" : "Allow",
+                            "Action" : "cloudwatch:*",
+                            "Resource" : "*"
+                          }
+                        ]
+                     }
+                   }
+                ]
+            }
+        },
+        "rJumpHostInstanceProfile" : {
+            "Type" : "AWS::IAM::InstanceProfile",
+            "Properties" : {
+                "Path" : "/",
+                "Roles" : [
+                    {
+                        "Ref" : "rJumpHostInstanceRole"
+                     }
+                 ]
+            }
+        },
+        "rJumpHost" : {
+            "Type": "AWS::EC2::Instance",
+            "Metadata": {
+                "AWS::CloudFormation::Init": {
+                }
+            },
+            "Properties": {
+                "IamInstanceProfile": {
+                    "Ref": "rJumpHostInstanceProfile"
+                },
+                "ImageId": {
+                    "Ref": "LatestAmiId"
+                },
+                "InstanceType": {
+                    "Fn::Sub": "${pInstanceType}"
+                },
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "#!/bin/bash\n",
+                                "yum -y install jq python3-pip\n",
+                                "#systemctl enable docker.service\n",
+                                "#systemctl restart docker\n",
+                                "pip3 install requests confluent_kafka websocket-client kafka-python snowflake-connector-python\n",
+                                "echo 'export FINNHUB_API_KEY=\"",
+                                {
+                                    "Ref": "FINNHUBApiKey"
+                                },
+                                "\"' >> ~/.bashrc\n",
+                                "source ~/.bashrc\n",
+                                "echo ",
+                                "#curl https://sfc-repo.snowflakecomputing.com/snowsql/bootstrap/1.2/linux_x86_64/snowsql-1.2.24-linux_x86_64.bash -o /tmp/snowsql-1.2.24-linux_x86_64.bash\n",
+                                "echo ",
+                                {
+                                    "Ref": "AWS::Region"
+                                },
+                                " > /tmp/region\n",
+                                "echo ",
+                                {
+                                    "Ref": "AWS::StackName"
+                                },
+                                " > /tmp/stackName\n",
+                                "curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"/tmp/awscliv2.zip\" \n",
+                                "unzip \"/tmp/awscliv2.zip\" -d /tmp \n",
+                                "/tmp/aws/install \n",
+                                "chmod 755 /usr/local/bin/aws \n",
+                                "# Helper function\n",
+                                "function error_exit\n",
+                                "{\n",
+                                "/opt/aws/bin/cfn-signal -e 1 -r \"$1\" '",
+                                {
+                                    "Ref": "EC2WaitHandle"
+                                },
+                                "'\n",
+                                "  exit 1\n",
+                                "}\n",
+                                "# Install the basic system configuration\n",
+                                "/opt/aws/bin/cfn-init -s ",
+                                {
+                                    "Ref": "AWS::StackId"
+                                },
+                                " -r rJumpHost ",
+                                "         --region ",
+                                {
+                                    "Ref": "AWS::Region"
+                                },
+                                " || error_exit 'Failed to run cfn-init'\n",
+                                "# All done so signal success\n",
+                                "/opt/aws/bin/cfn-signal -e 0 -r \"setup complete\" '",
+                                {
+                                    "Ref": "EC2WaitHandle"
+                                },
+                                "'\n"
+                            ]
+                        ]
+                    }
+                },
+                "NetworkInterfaces": [
+                    {
+                        "AssociatePublicIpAddress": true,
+                        "DeviceIndex": "0",
+                        "GroupSet": [
+                            {
+                                "Ref": "MSKSecurityGroupId"
+                            }
+                        ],
+                        "SubnetId": {
+                            "Ref": "Subnet1"
+                        }
+                    }
+                ],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": {
+                            "Fn::Sub": "${AWS::StackName}-jumphost"
+                        }
+                    }
+                ]
+            }
+        },
+        "EC2WaitHandle": {
+            "Type": "AWS::CloudFormation::WaitConditionHandle"
+        },
+        "EC2WaitCondition": {
+            "Type": "AWS::CloudFormation::WaitCondition",
+            "Properties": {
+                "Handle": {
+                    "Ref": "EC2WaitHandle"
+                },
+            "Timeout": "3600"
+            }
+        }
+    },
+    "Outputs": {
+        "MSKSecurityGroupID": {
+            "Description": "The ID of the security group created for the MSK clusters",
+            "Value": {
+                "Ref": "MSKSecurityGroupId"
+            }
+        },
+        "MSKClusterArn": {
+            "Description": "The Arn for the MSKMMCluster1 MSK cluster",
+            "Value": {
+                "Fn::If": [
+                    "MTLS",
+                    {
+                        "Ref": "MSKClusterMTLS"
+                    },
+                    {
+                        "Ref": "MSKClusterNoMTLS"
+                    }
+                ]
+            }
+        },
+        "JumpHostId" : {
+            "Description" : "Jump Host Instance ID",
+            "Value" : {"Ref" : "rJumpHost" }
+        },
+        "MSKConnectorRole" : {
+            "Description" : "MSK Connector Role",
+            "Value" : {"Ref" : "MSKConnectRole" }
+        }
+    }
+}
