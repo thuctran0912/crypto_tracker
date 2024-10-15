@@ -1,0 +1,34 @@
+CREATE OR REPLACE PROCEDURE BATCH_DB.LANDING_FINNHUB.PROCESS_FINNHUB_NEWS()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+BEGIN
+    -- Clone to replica
+    CREATE OR REPLACE TABLE BATCH_DB.REPLICA_FINNHUB.FINNHUB_NEWS CLONE BATCH_DB.LANDING_FINNHUB.FINNHUB_NEWS;
+
+    -- Ensure history table exists and merge data
+    CREATE TABLE IF NOT EXISTS BATCH_DB.HISTORY_FINNHUB.FINNHUB_NEWS LIKE BATCH_DB.LANDING_FINNHUB.FINNHUB_NEWS;
+    MERGE INTO BATCH_DB.HISTORY_FINNHUB.FINNHUB_NEWS AS target
+    USING BATCH_DB.LANDING_FINNHUB.FINNHUB_NEWS AS source
+    ON target.ID = source.ID
+    WHEN MATCHED THEN
+        UPDATE SET
+            target.CATEGORY = source.CATEGORY,
+            target.DATETIME = source.DATETIME,
+            target.HEADLINE = source.HEADLINE,
+            target.IMAGE = source.IMAGE,
+            target.RELATED = source.RELATED,
+            target.SOURCE = source.SOURCE,
+            target.SUMMARY = source.SUMMARY,
+            target.URL = source.URL
+    WHEN NOT MATCHED THEN
+        INSERT (CATEGORY, DATETIME, HEADLINE, ID, IMAGE, RELATED, SOURCE, SUMMARY, URL)
+        VALUES (source.CATEGORY, source.DATETIME, source.HEADLINE, source.ID, source.IMAGE, source.RELATED, source.SOURCE, source.SUMMARY, source.URL);
+
+    -- Truncate landing table
+    TRUNCATE TABLE BATCH_DB.LANDING_FINNHUB.FINNHUB_NEWS;
+
+    RETURN 'FINNHUB_NEWS processing completed successfully';
+END;
+$$;
