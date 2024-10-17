@@ -15,6 +15,7 @@ def get_crypto_data(crypto):
         FROM MSK_STREAMING_DB.MSK_STREAMING_SCHEMA.{crypto}_TRADING_VIEW
         WHERE TRADE_TIME > DATEADD(minutes, -30, CURRENT_TIMESTAMP())
         ORDER BY TRADE_TIME DESC
+        LIMIT 3000
         """
         return session.sql(query).to_pandas()
     except Exception as e:
