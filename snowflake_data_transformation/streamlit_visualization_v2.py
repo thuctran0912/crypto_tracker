@@ -4,6 +4,7 @@ import pandas as pd
 from snowflake.snowpark.context import get_active_session
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 st.set_page_config(layout="wide")
 session = get_active_session()
@@ -52,13 +53,65 @@ def create_chart(data, title):
         tooltip=['TRADE_TIME', 'AVG_PRICE']
     ).properties(title=title).interactive()
 
-st.title("Live Crypto Price Trends")
+def get_news():
+    try:
+        query = """
+        SELECT SOURCE, HEADLINE, URL
+        FROM BATCH_DB.HISTORY_FINNHUB.FINNHUB_NEWS
+        ORDER BY DATETIME DESC
+        LIMIT 10
+        """
+        return session.sql(query).to_pandas()
+    except Exception as e:
+        st.error(f"Error fetching news data: {str(e)}")
+        return pd.DataFrame()
 
+def get_portfolio():
+    try:
+        query = """
+        SELECT SYMBOL, PRICE_PER_UNIT_BOUGHT, QUANTITY
+        FROM VISUALIZATION_DB.PORTIFOLIO.PORTFOLIO
+        """
+        return session.sql(query).to_pandas()
+    except Exception as e:
+        st.error(f"Error fetching portfolio data: {str(e)}")
+        return pd.DataFrame()
+
+def calculate_portfolio_performance(portfolio, current_prices):
+    def to_decimal(value):
+        if isinstance(value, Decimal):
+            return value
+        return Decimal(str(value)) if value is not None else Decimal('0')
+
+    portfolio['QUANTITY'] = portfolio['QUANTITY'].apply(to_decimal)
+    portfolio['PRICE_PER_UNIT_BOUGHT'] = portfolio['PRICE_PER_UNIT_BOUGHT'].apply(to_decimal)
+    portfolio['current_price'] = portfolio['SYMBOL'].map(current_prices).apply(to_decimal)
+    
+    portfolio['current_value'] = portfolio['QUANTITY'] * portfolio['current_price']
+    portfolio['bought_value'] = portfolio['QUANTITY'] * portfolio['PRICE_PER_UNIT_BOUGHT']
+    portfolio['profit_loss'] = portfolio['current_value'] - portfolio['bought_value']
+    portfolio['percent_change'] = ((portfolio['current_price'] - portfolio['PRICE_PER_UNIT_BOUGHT']) / portfolio['PRICE_PER_UNIT_BOUGHT']) * 100
+    
+    total_profit_loss = portfolio['profit_loss'].sum()
+    total_current_value = portfolio['current_value'].sum()
+    total_bought_value = portfolio['bought_value'].sum()
+    overall_percent_change = ((total_current_value - total_bought_value) / total_bought_value) * 100
+    
+    return portfolio, float(total_profit_loss), float(total_current_value), float(overall_percent_change)
+
+st.title("Live Crypto Price Trends, News, and Portfolio Performance")
 update_interval = st.sidebar.slider("Chart update interval (seconds)", 1, 60, 5)
+
 chart_placeholder = st.empty()
 price_placeholder = st.empty()
+news_placeholder = st.empty()
+portfolio_placeholder = st.empty()
 
-last_price_update = datetime.now() - timedelta(minutes=1)  # Initialize to update immediately
+last_price_update = datetime.now() - timedelta(minutes=1)
+last_portfolio_update = datetime.now() - timedelta(minutes=15)
+
+current_prices = {}
+previous_portfolio_value = None
 
 while True:
     btc_data = get_crypto_data("BTC")
@@ -69,6 +122,11 @@ while True:
     if current_time - last_price_update >= timedelta(minutes=1):
         btc_price, btc_time = get_current_price("BTC")
         eth_price, eth_time = get_current_price("ETH")
+        
+        if btc_price is not None:
+            current_prices["BTC"] = Decimal(str(btc_price))
+        if eth_price is not None:
+            current_prices["ETH"] = Decimal(str(eth_price))
         
         with price_placeholder.container():
             col1, col2, col3 = st.columns(3)
@@ -94,5 +152,40 @@ while True:
             st.altair_chart(create_chart(btc_data, "BTC Price Trend"), use_container_width=True)
         with col2:
             st.altair_chart(create_chart(eth_data, "ETH Price Trend"), use_container_width=True)
+
+    # Fetch and display news
+    news_data = get_news()
+    with news_placeholder.container():
+        st.subheader("Latest News")
+        for _, row in news_data.iterrows():
+            st.markdown(f"**{row['SOURCE']}**: [{row['HEADLINE']}]({row['URL']})")
+
+    # Update portfolio performance every 15 minutes
+    if current_time - last_portfolio_update >= timedelta(minutes=15):
+        portfolio = get_portfolio()
+        updated_portfolio, total_profit_loss, total_current_value, overall_percent_change = calculate_portfolio_performance(portfolio, current_prices)
+        
+        with portfolio_placeholder.container():
+            st.subheader("Portfolio Performance")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Profit/Loss", f"${total_profit_loss:.2f}")
+            col2.metric("Total Current Value", f"${total_current_value:.2f}")
+            col3.metric("Overall Change", f"{overall_percent_change:.2f}%")
+            
+            if previous_portfolio_value is not None:
+                change_15min = total_current_value - previous_portfolio_value
+                change_percentage = (change_15min / previous_portfolio_value) * 100
+                st.metric("Change in Last 15 Minutes", f"${change_15min:.2f}", f"{change_percentage:.2f}%")
+            
+            st.markdown("### Portfolio Details")
+            for _, row in updated_portfolio.iterrows():
+                st.markdown(f"**{row['SYMBOL']}**:")
+                col1, col2 = st.columns(2)
+                col1.metric("Quantity", f"{float(row['QUANTITY']):.6f}")
+                col2.metric("Price Change", f"{float(row['percent_change']):.2f}%")
+            
+            previous_portfolio_value = total_current_value
+        
+        last_portfolio_update = current_time
 
     time.sleep(update_interval)
