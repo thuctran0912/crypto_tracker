@@ -6,10 +6,22 @@ import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+# Configure Streamlit page layout to wide
 st.set_page_config(layout="wide")
 session = get_active_session()
 
 def get_combined_crypto_data(crypto):
+    """
+    Fetches historical and latest crypto price data from Snowflake.
+    
+    Parameters:
+    - crypto: The cryptocurrency symbol (e.g., 'BTC', 'ETH').
+
+    Returns:
+    - historical_data: DataFrame containing historical price data.
+    - latest_price: The latest price of the cryptocurrency.
+    - latest_trade_time: The timestamp of the latest trade.
+    """
     try:
         query = f"""
         SELECT TRADE_TIME, AVG_PRICE 
@@ -40,6 +52,16 @@ def get_combined_crypto_data(crypto):
         return pd.DataFrame(), None, None
 
 def create_chart(data, title):
+    """
+    Creates an Altair line chart for the given data.
+
+    Parameters:
+    - data: DataFrame containing price data.
+    - title: Title for the chart.
+
+    Returns:
+    - An Altair chart object.
+    """
     if data.empty:
         return alt.Chart().mark_text().encode(text=alt.value(f"No data available for {title}"))
 
@@ -56,6 +78,12 @@ def create_chart(data, title):
     ).properties(title=title).interactive()
 
 def get_news():
+    """
+    Fetches the latest cryptocurrency-related news from Snowflake.
+
+    Returns:
+    - DataFrame containing the latest news data.
+    """
     try:
         query = """
         SELECT SOURCE, HEADLINE, URL
@@ -69,6 +97,12 @@ def get_news():
         return pd.DataFrame()
 
 def get_portfolio():
+    """
+    Fetches the user's portfolio data from Snowflake.
+
+    Returns:
+    - DataFrame containing portfolio details.
+    """
     try:
         query = """
         SELECT SYMBOL, PRICE_PER_UNIT_BOUGHT, QUANTITY
@@ -80,30 +114,45 @@ def get_portfolio():
         return pd.DataFrame()
 
 def calculate_portfolio_performance(portfolio, current_prices):
+    """
+    Calculates the performance metrics for the user's portfolio.
+
+    Parameters:
+    - portfolio: DataFrame containing portfolio data.
+    - current_prices: Dictionary with current prices of assets.
+
+    Returns:
+    - Updated portfolio DataFrame and various performance metrics.
+    """
     def to_decimal(value):
         if isinstance(value, Decimal):
             return value
         return Decimal(str(value)) if value is not None else Decimal('0')
 
+    # Convert quantities and prices to Decimal for precision
     portfolio['QUANTITY'] = portfolio['QUANTITY'].apply(to_decimal)
     portfolio['PRICE_PER_UNIT_BOUGHT'] = portfolio['PRICE_PER_UNIT_BOUGHT'].apply(to_decimal)
     portfolio['current_price'] = portfolio['SYMBOL'].map(current_prices).apply(to_decimal)
-    
+
+    # Calculate current value, profit/loss, and percent change
     portfolio['current_value'] = portfolio['QUANTITY'] * portfolio['current_price']
     portfolio['bought_value'] = portfolio['QUANTITY'] * portfolio['PRICE_PER_UNIT_BOUGHT']
     portfolio['profit_loss'] = portfolio['current_value'] - portfolio['bought_value']
     portfolio['percent_change'] = ((portfolio['current_price'] - portfolio['PRICE_PER_UNIT_BOUGHT']) / portfolio['PRICE_PER_UNIT_BOUGHT']) * 100
-    
+
+    # Calculate total performance metrics
     total_profit_loss = portfolio['profit_loss'].sum()
     total_current_value = portfolio['current_value'].sum()
     total_bought_value = portfolio['bought_value'].sum()
     overall_percent_change = ((total_current_value - total_bought_value) / total_bought_value) * 100
-    
+
     return portfolio, float(total_profit_loss), float(total_current_value), float(overall_percent_change)
 
+# Streamlit app layout and logic
 st.title("Live Crypto Price Trends, News, and Portfolio Performance")
 update_interval = st.sidebar.slider("Chart update interval (seconds)", 1, 60, 5)
 
+# Create placeholders for dynamic content
 chart_placeholder = st.empty()
 price_placeholder = st.empty()
 news_placeholder = st.empty()
@@ -115,8 +164,10 @@ last_portfolio_update = datetime.now() - timedelta(minutes=15)
 current_prices = {}
 previous_portfolio_value = None
 
+# Main loop to update the dashboard
 while True:
     with st.spinner("Fetching data..."):
+        # Fetch historical and latest data for BTC and ETH
         btc_data, btc_price, btc_time = get_combined_crypto_data("BTC")
         eth_data, eth_price, eth_time = get_combined_crypto_data("ETH")
     
@@ -146,6 +197,7 @@ while True:
 
             last_price_update = current_time
 
+        # Create and display the charts for BTC and ETH
         with chart_placeholder.container():
             col1, col2 = st.columns(2)
             with col1:
